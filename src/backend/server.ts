@@ -8,11 +8,11 @@ const app = express();
 const port = process.env['PORT'] || 3000;
 
 const pool = new Pool({
-  host: process.env['DB_HOST'],
-  port: parseInt(process.env['DB_PORT'] || '5432'),
-  database: process.env['DB_NAME'],
-  user: process.env['DB_USER'],
-  password: process.env['DB_PASSWORD'],
+    host: process.env['DB_HOST'],
+    port: parseInt(process.env['DB_PORT'] || '5432'),
+    database: process.env['DB_NAME'],
+    user: process.env['DB_USER'],
+    password: process.env['DB_PASSWORD'],
 });
 
 
@@ -46,18 +46,76 @@ const ssot = {
 app.use(express.urlencoded({ extended: true }));
 
 app.get('/menu', (_, res) => {
-    res.send('SSOT2026 - Solo Somos Otros Tenaces en 2026');
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <title>Registrar Materia</title>
+            <style>
+                body { font-family: sans-serif; margin: 2rem; }
+                form { display: flex; flex-direction: column; width: 300px; gap: 10px; }
+                label { display: flex; justify-content: space-between; align-items: center; }
+                select { width: 160px; padding: 2px; }
+            </style>
+        </head>
+        <body>
+            <h2>SSOT2026 - Solo Somos Otros Tenaces </h2>
+            <a href="/poc/lista-materias">Ver lista de materias</a>
+            <br>
+            <a href="/poc/inter">Ir al formulario</a>
+        </body>
+        </html>
+        `);
 })
 
 app.get('/poc/inter', (_, res) => {
     res.send(`
-        <form method=post action="/poc/api/inter">
-            <p>Esta es una prueba de concepto</p>
-            <p><label>dato:<input name=dato></label></p>
-            <input type=submit value="Procesar">
-        </form>
-    `)
-})
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <title>Registrar Materia</title>
+            <style>
+                body { font-family: sans-serif; margin: 2rem; }
+                form { display: flex; flex-direction: column; width: 300px; gap: 10px; }
+                label { display: flex; justify-content: space-between; align-items: center; }
+                select { width: 160px; padding: 2px; }
+            </style>
+        </head>
+        <body>
+            <h2>Registrar Materia</h2>
+            <form method="POST" action="/poc/materias/crear">
+                <label>
+                    Código:
+                    <input type="text" name="cod_mat" required placeholder="Ej: BD">
+                </label>
+                <label>
+                    Materia:
+                    <input type="text" name="materia" required placeholder="Ej: Base de Datos">
+                </label>
+                <label>
+                    Plan:
+                    <select name="plan" required>
+                        <option value="" disabled selected>Seleccione un plan</option>
+                        <option value="1993">1993</option>
+                        <option value="2023">2023</option>
+                    </select>
+                </label>
+                <label>
+                    Obligatoria:
+                    <input type="checkbox" name="obligatoria" value="true">
+                </label>
+                <button type="submit">Guardar Materia</button>
+            </form>
+            <br>
+            <a href="/poc/lista-materias">Ver lista de materias</a>
+            <br>
+            <a href="/menu">Volver al menu</a>
+        </body>
+        </html>
+    `);
+});
 
 app.post('/poc/api/inter', async (req, res) => {
     console.log('POST', '/poc/api/inter')
@@ -68,17 +126,7 @@ app.post('/poc/api/inter', async (req, res) => {
     console.log(await req.body);
 })
 
-app.get('/poc/materias', async (_, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM ssot.materias');
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Error fetching subjects:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
 
-// No anda
 Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
 
     app.get(`/poc/lista-${tabla}`, async (_, res) => {
@@ -100,8 +148,56 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
             ).join('')}
             </tr>`
         ).join('')}
-    </table>`)
-    })
+    </table>
+    <a href="/menu">Volver al menu</a>`)
+    });
+
+    app.post(`/poc/${tabla}/crear`, async (req, res) => {
+        try {
+            const columnas = Object.keys(def.campos);
+
+            // Mapeo y casteo automático según el tipo definido en ssot
+            const valores = columnas.map(col => {
+                const valor = req.body[col];
+                const tipo = def.campos[col]?.tipo;
+
+                if (tipo === 'boolean') {
+                    return valor === 'true' || valor === 'on';
+                }
+                if (tipo === 'integer') {
+                    return valor !== undefined && valor !== '' ? parseInt(valor, 10) : null;
+                }
+                return valor ?? null;
+            });
+
+            // Genera "$1, $2, $3, ..."
+            const placeholders = columnas.map((_, i) => `$${i + 1}`).join(', ');
+
+            const query = `
+                INSERT INTO ssot.${tabla} (${columnas.join(', ')})
+                VALUES (${placeholders})
+                RETURNING *
+            `;
+
+            const result = await pool.query(query, valores);
+
+            res.send(`
+                <h3>Registro creado con éxito en ssot.${tabla}</h3>
+                <pre>${JSON.stringify(result.rows[0], null, 2)}</pre>
+                <p>
+                    <a href="/poc/inter">Volver al formulario</a> | 
+                    <a href="/poc/lista-${tabla}">Ver listado de ${tabla}</a>
+                </p>
+            `);
+        } catch (error) {
+            console.error(`Error al insertar en ${tabla}:`, error);
+            res.status(500).send(`
+                <h3 style="color: red;">Error al insertar en ${tabla}</h3>
+                <p>${(error as Error).message}</p>
+                <a href="/poc/inter">Volver</a>
+            `);
+        }
+    });
 });
 
 
