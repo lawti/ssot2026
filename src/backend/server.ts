@@ -71,7 +71,6 @@ function castear(valor: unknown, tipo: TipoDato) {
     return casters[tipo](valor);
 }
 
-// Asegura que no se puedan inyectar valores fuera de los predeterminados
 function validarOpciones(col: string, valor: unknown, campo: CampoDef) {
     if (campo.opciones && campo.opciones.length > 0) {
         const esValido = campo.opciones.some(opt => String(opt) === String(valor));
@@ -197,11 +196,11 @@ app.get('/poc/inter', (_, res) => {
     `);
 });
 
-// Generador genérico de endpoints CRUD
+// Generador genérico de endpoints CRUD por cada tabla del SSOT
 Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
     const columnas = Object.keys(def.campos);
 
-    // 1. LISTAR
+    // 1. LISTAR (con acciones de Editar y Eliminar con confirmación)
     app.get(`/poc/lista-${tabla}`, async (_, res) => {
         try {
             const result = await pool.query(`
@@ -219,11 +218,20 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
                     </tr>
                     ${result.rows.map((row: Record<string, unknown>) => {
                         const pkParams = def.pk.map(k => `${encodeURIComponent(k)}=${encodeURIComponent(String(row[k]))}`).join('&');
+                        const pkResumen = def.pk.map(k => `${k}='${row[k]}'`).join(', ');
+
                         return `
                             <tr>
                                 ${columnas.map(col => `<td>${row[col] ?? ''}</td>`).join('')}
                                 <td>
                                     <a href="/poc/form-editar-${tabla}?${pkParams}">Editar</a>
+                                    |
+                                    <form method="POST" action="/poc/${tabla}/eliminar" style="display:inline;" onsubmit="return confirm('¿Está seguro de eliminar (${pkResumen})?');">
+                                        ${def.pk.map(k => `<input type="hidden" name="${k}" value="${row[k] ?? ''}">`).join('')}
+                                        <button type="submit" style="background:none; border:none; color:red; text-decoration:underline; cursor:pointer; padding:0; font:inherit;">
+                                            Eliminar
+                                        </button>
+                                    </form>
                                 </td>
                             </tr>
                         `;
@@ -397,6 +405,36 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
             console.error(`Error al actualizar en ${tabla}:`, error);
             res.status(500).send(`
                 <h3 style="color: red;">Error al actualizar en ${tabla}</h3>
+                <p>${(error as Error).message}</p>
+                <a href="/poc/lista-${tabla}">Volver al listado</a>
+            `);
+        }
+    });
+
+    // 5. ELIMINAR (DELETE genérico)
+    app.post(`/poc/${tabla}/eliminar`, async (req, res) => {
+        try {
+            const valoresPk = def.pk.map(c => {
+                const campo = def.campos[c];
+                if (!campo) throw new Error(`PK "${c}" no encontrada.`);
+                return castear(req.body[c], campo.tipo);
+            });
+
+            const whereClause = def.pk.map((c, i) => `${c} = $${i + 1}`).join(' AND ');
+            const query = `DELETE FROM ssot.${tabla} WHERE ${whereClause} RETURNING *`;
+
+            const result = await pool.query(query, valoresPk);
+
+            if (result.rowCount === 0) {
+                res.status(404).send('Registro no encontrado para eliminar.');
+                return;
+            }
+
+            res.redirect(`/poc/lista-${tabla}`);
+        } catch (error) {
+            console.error(`Error al eliminar en ${tabla}:`, error);
+            res.status(500).send(`
+                <h3 style="color: red;">Error al eliminar en ${tabla}</h3>
                 <p>${(error as Error).message}</p>
                 <a href="/poc/lista-${tabla}">Volver al listado</a>
             `);
