@@ -1,5 +1,5 @@
 import express from "express";
-import { Pool } from 'pg'
+import { Pool } from 'pg';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -15,9 +15,22 @@ const pool = new Pool({
     password: process.env['DB_PASSWORD'],
 });
 
+// 1. Diccionario SSOT de casteo y tipos soportados
+const casters = {
+    text: (val: any) => (val ?? null) as string | null,
+    integer: (val: any) => (val !== undefined && val !== '' && val !== null ? parseInt(val, 10) : null),
+    boolean: (val: any) => val === 'true' || val === 'on' || val === true,
+} as const;
+
+type TipoDato = keyof typeof casters;
+
+// Función de casteo tipada de forma estricta
+function castearValor(valor: any, tipo: TipoDato) {
+    return casters[tipo](valor);
+}
 
 type DefTabla = {
-    campos: Record<string, { tipo: string }>
+    campos: Record<string, { tipo: TipoDato }>
     pk: string[]
 }
 
@@ -44,31 +57,40 @@ const ssot = {
 }
 
 app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
+// Menú principal con enlaces dinámicos según ssot.tablas
 app.get('/menu', (_, res) => {
     res.send(`
         <!DOCTYPE html>
         <html lang="es">
         <head>
             <meta charset="UTF-8">
-            <title>Registrar Materia</title>
+            <title>SSOT2026 - Menú</title>
             <style>
                 body { font-family: sans-serif; margin: 2rem; }
-                form { display: flex; flex-direction: column; width: 300px; gap: 10px; }
-                label { display: flex; justify-content: space-between; align-items: center; }
-                select { width: 160px; padding: 2px; }
+                ul { line-height: 1.8; }
             </style>
         </head>
         <body>
-            <h2>SSOT2026 - Solo Somos Otros Tenaces </h2>
-            <a href="/poc/lista-materias">Ver lista de materias</a>
+            <h2>SSOT2026 - Solo Somos Otros Tenaces</h2>
+            <h3>Tablas disponibles:</h3>
+            <ul>
+                ${Object.keys(ssot.tablas).map(tabla => `
+                    <li>
+                        <strong>${tabla}:</strong> 
+                        <a href="/poc/lista-${tabla}">Ver listado</a>
+                    </li>
+                `).join('')}
+            </ul>
             <br>
-            <a href="/poc/inter">Ir al formulario</a>
+            <a href="/poc/inter">Ir al formulario de materias</a>
         </body>
         </html>
-        `);
-})
+    `);
+});
 
+// Formulario de prueba para materias
 app.get('/poc/inter', (_, res) => {
     res.send(`
         <!DOCTYPE html>
@@ -111,66 +133,58 @@ app.get('/poc/inter', (_, res) => {
             <br>
             <a href="/poc/lista-materias">Ver lista de materias</a>
             <br>
-            <a href="/menu">Volver al menu</a>
+            <a href="/menu">Volver al menú</a>
         </body>
         </html>
     `);
 });
 
-app.post('/poc/api/inter', async (req, res) => {
-    console.log('POST', '/poc/api/inter')
-    console.log(req.query);
-    res.send(`
-        <H2>recibido</H2>
-    `)
-    console.log(await req.body);
-})
-
-
+// Endpoints genéricos para Listar y Agregar por cada tabla
 Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
+    const columnas = Object.keys(def.campos);
 
+    // 1. LISTAR: Lee las columnas en el orden exacto definido en el SSOT
     app.get(`/poc/lista-${tabla}`, async (_, res) => {
-        const result = await pool.query(`
-        SELECT ${Object.keys(def.campos).join(',')} 
-            FROM ssot.${tabla}
-            ORDER BY ${def.pk}
-    `);
-        res.send(`<table>
-            <tr>
-                ${Object.keys(def.campos).map(title =>
-            `<th>${title}</th>`
-        ).join('')}
-            </tr>
-        ${result.rows.map((row: Record<string, any>) =>
-            `<tr>
-                ${Object.entries(row).map(([_, value]: string[]) =>
-                `<td>${value}</td>`
-            ).join('')}
-            </tr>`
-        ).join('')}
-    </table>
-    <a href="/menu">Volver al menu</a>`)
+        try {
+            const result = await pool.query(`
+                SELECT ${columnas.join(', ')} 
+                FROM ssot.${tabla}
+                ORDER BY ${def.pk.join(', ')}
+            `);
+
+            res.send(`
+                <h2>Listado de ${tabla}</h2>
+                <table border="1" cellpadding="6" style="border-collapse: collapse;">
+                    <tr>
+                        ${columnas.map(title => `<th>${title}</th>`).join('')}
+                    </tr>
+                    ${result.rows.map((row: Record<string, any>) => `
+                        <tr>
+                            ${columnas.map(col => `<td>${row[col] ?? ''}</td>`).join('')}
+                        </tr>
+                    `).join('')}
+                </table>
+                <br>
+                <a href="/menu">Volver al menú</a>
+            `);
+        } catch (error) {
+            console.error(`Error al listar ${tabla}:`, error);
+            res.status(500).send(`Error al consultar ${tabla}: ${(error as Error).message}`);
+        }
     });
 
+    // 2. AGREGAR (INSERT): Aplica el casteo dinámico a cada columna
     app.post(`/poc/${tabla}/crear`, async (req, res) => {
         try {
-            const columnas = Object.keys(def.campos);
-
-            // Mapeo y casteo automático según el tipo definido en ssot
+            // Mapeo seguro: cada valor pasa por su caster según el tipo registrado en el SSOT
             const valores = columnas.map(col => {
-                const valor = req.body[col];
-                const tipo = def.campos[col]?.tipo;
-
-                if (tipo === 'boolean') {
-                    return valor === 'true' || valor === 'on';
+                const campo = def.campos[col];
+                if (!campo) {
+                    throw new Error(`Definición no encontrada para la columna "${col}" en la tabla "${tabla}".`);
                 }
-                if (tipo === 'integer') {
-                    return valor !== undefined && valor !== '' ? parseInt(valor, 10) : null;
-                }
-                return valor ?? null;
+                return castearValor(req.body[col], campo.tipo);
             });
 
-            // Genera "$1, $2, $3, ..."
             const placeholders = columnas.map((_, i) => `$${i + 1}`).join(', ');
 
             const query = `
@@ -186,7 +200,8 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
                 <pre>${JSON.stringify(result.rows[0], null, 2)}</pre>
                 <p>
                     <a href="/poc/inter">Volver al formulario</a> | 
-                    <a href="/poc/lista-${tabla}">Ver listado de ${tabla}</a>
+                    <a href="/poc/lista-${tabla}">Ver listado de ${tabla}</a> | 
+                    <a href="/menu">Menú principal</a>
                 </p>
             `);
         } catch (error) {
@@ -199,7 +214,6 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
         }
     });
 });
-
 
 app.listen(port, (error) => {
     if (error) throw error;
