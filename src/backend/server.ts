@@ -29,17 +29,24 @@ function castearValor(valor: any, tipo: TipoDato) {
     return casters[tipo](valor);
 }
 
-// Renderizado de inputs para el formulario
+// Renderizado de campos para el formulario
 function renderInput(nombreCol: string, tipo: TipoDato, valorActual: any, esPk: boolean): string {
-    const readonlyAttr = esPk ? 'readonly style="background-color: #f0f0f0;"' : '';
+    // Si es PK: mostramos texto plano para que no parezca un input, y enviamos el dato vía hidden
+    if (esPk) {
+        return `
+            <span style="font-weight: bold; color: #333; padding: 3px 0;">${valorActual ?? ''}</span>
+            <input type="hidden" name="${nombreCol}" value="${valorActual ?? ''}">
+        `;
+    }
+
     if (tipo === 'boolean') {
         const checked = valorActual === true || valorActual === 't' ? 'checked' : '';
-        return `<input type="checkbox" name="${nombreCol}" value="true" ${checked} ${esPk ? 'onclick="return false;"' : ''}>`;
+        return `<input type="checkbox" name="${nombreCol}" value="true" ${checked}>`;
     }
     if (tipo === 'integer') {
-        return `<input type="number" name="${nombreCol}" value="${valorActual ?? ''}" ${readonlyAttr} required>`;
+        return `<input type="number" name="${nombreCol}" value="${valorActual ?? ''}" required>`;
     }
-    return `<input type="text" name="${nombreCol}" value="${valorActual ?? ''}" ${readonlyAttr} required>`;
+    return `<input type="text" name="${nombreCol}" value="${valorActual ?? ''}" required>`;
 }
 
 type DefTabla = {
@@ -173,14 +180,14 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
                         <th>Acciones</th>
                     </tr>
                     ${result.rows.map((row: Record<string, any>) => {
-                        const pkParams = def.pk.map(k => `${encodeURIComponent(k)}=${encodeURIComponent(row[k])}`).join('&');
-                        return `
+                const pkParams = def.pk.map(k => `${encodeURIComponent(k)}=${encodeURIComponent(row[k])}`).join('&');
+                return `
                             <tr>
                                 ${columnas.map(col => `<td>${row[col] ?? ''}</td>`).join('')}
                                 <td><a href="/poc/form-editar-${tabla}?${pkParams}">Editar</a></td>
                             </tr>
                         `;
-                    }).join('')}
+            }).join('')}
                 </table>
                 <br>
                 <a href="/menu">Volver al menú</a>
@@ -271,16 +278,16 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
                     <h2>Editar ${tabla}</h2>
                     <form method="POST" action="/poc/${tabla}/actualizar">
                         ${columnas.map(col => {
-                            const campo = def.campos[col];
-                            if (!campo) return '';
-                            const esPk = def.pk.includes(col);
-                            return `
+                const campo = def.campos[col];
+                if (!campo) return '';
+                const esPk = def.pk.includes(col);
+                return `
                                 <label>
                                     ${col}${esPk ? ' (PK)' : ''}:
                                     ${renderInput(col, campo.tipo, registro[col], esPk)}
                                 </label>
                             `;
-                        }).join('')}
+            }).join('')}
                         <button type="submit" style="margin-top: 10px;">Guardar Cambios</button>
                     </form>
                     <br>
