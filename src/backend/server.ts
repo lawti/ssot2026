@@ -16,13 +16,18 @@ const pool = new Pool({
 });
 
 // ============================================================================
-// 1. FUENTE ÚNICA DE LA VERDAD (SSOT) - El dominio manda
+// 1. FUENTE ÚNICA DE LA VERDAD (SSOT)
 // ============================================================================
 
 export type TipoDato = 'text' | 'integer' | 'boolean';
 
+export type CampoDef = {
+    readonly tipo: TipoDato;
+    readonly opciones?: readonly (string | number)[];
+};
+
 export type DefTabla = {
-    readonly campos: Record<string, { readonly tipo: TipoDato }>;
+    readonly campos: Record<string, CampoDef>;
     readonly pk: readonly string[];
 };
 
@@ -33,7 +38,7 @@ export const ssot = {
                 cod_mat: { tipo: 'text' },
                 materia: { tipo: 'text' },
                 obligatoria: { tipo: 'boolean' },
-                plan: { tipo: 'integer' },
+                plan: { tipo: 'integer', opciones: [1993, 2023] },
             },
             pk: ['cod_mat'],
         },
@@ -49,10 +54,9 @@ export const ssot = {
 } satisfies { tablas: Record<string, DefTabla> };
 
 // ============================================================================
-// 2. ADAPTADOR DE TIPOS (Obedece al SSOT)
+// 2. ADAPTADOR DE TIPOS Y VALIDACIÓN
 // ============================================================================
 
-// TypeScript garantiza que existan exactamente los mismos tipos que en TipoDato
 const casters: Record<TipoDato, (v: unknown) => string | number | boolean | null> = {
     text: (v) => (v === undefined || v === null || v === '' ? null : String(v).trim()),
     integer: (v) => {
@@ -67,8 +71,17 @@ function castear(valor: unknown, tipo: TipoDato) {
     return casters[tipo](valor);
 }
 
-// Helper para renderizar los campos en el formulario HTML
-function renderInput(nombreCol: string, tipo: TipoDato, valor: unknown, esPk: boolean): string {
+// Asegura que no se puedan inyectar valores fuera de los predeterminados
+function validarOpciones(col: string, valor: unknown, campo: CampoDef) {
+    if (campo.opciones && campo.opciones.length > 0) {
+        const esValido = campo.opciones.some(opt => String(opt) === String(valor));
+        if (!esValido) {
+            throw new Error(`Valor "${valor}" inválido para la columna "${col}". Opciones permitidas: [${campo.opciones.join(', ')}]`);
+        }
+    }
+}
+
+function renderInput(nombreCol: string, campo: CampoDef, valor: unknown, esPk: boolean): string {
     if (esPk) {
         return `
             <span style="font-weight: bold; color: #333; padding: 3px 0;">${valor ?? ''}</span>
@@ -76,11 +89,22 @@ function renderInput(nombreCol: string, tipo: TipoDato, valor: unknown, esPk: bo
         `;
     }
 
-    if (tipo === 'boolean') {
+    if (campo.opciones && campo.opciones.length > 0) {
+        return `
+            <select name="${nombreCol}" required>
+                ${campo.opciones.map(opt => `
+                    <option value="${opt}" ${String(valor) === String(opt) ? 'selected' : ''}>${opt}
+                    </option>
+                `).join('')}
+            </select>
+        `;
+    }
+
+    if (campo.tipo === 'boolean') {
         const checked = valor === true || valor === 't' ? 'checked' : '';
         return `<input type="checkbox" name="${nombreCol}" value="true" ${checked}>`;
     }
-    if (tipo === 'integer') {
+    if (campo.tipo === 'integer') {
         return `<input type="number" name="${nombreCol}" value="${valor ?? ''}" required>`;
     }
     return `<input type="text" name="${nombreCol}" value="${valor ?? ''}" required>`;
@@ -124,7 +148,7 @@ app.get('/menu', (_, res) => {
     `);
 });
 
-// Formulario de prueba manual para materias
+// Formulario manual de prueba para materias
 app.get('/poc/inter', (_, res) => {
     res.send(`
         <!DOCTYPE html>
@@ -173,11 +197,11 @@ app.get('/poc/inter', (_, res) => {
     `);
 });
 
-// Generador genérico de endpoints CRUD por cada tabla del SSOT
+// Generador genérico de endpoints CRUD
 Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
     const columnas = Object.keys(def.campos);
 
-    // 1. LISTAR (con acciones de Editar y Eliminar)
+    // 1. LISTAR
     app.get(`/poc/lista-${tabla}`, async (_, res) => {
         try {
             const result = await pool.query(`
@@ -195,20 +219,11 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
                     </tr>
                     ${result.rows.map((row: Record<string, unknown>) => {
                         const pkParams = def.pk.map(k => `${encodeURIComponent(k)}=${encodeURIComponent(String(row[k]))}`).join('&');
-                        const pkResumen = def.pk.map(k => `${k}='${row[k]}'`).join(', ');
-
                         return `
                             <tr>
                                 ${columnas.map(col => `<td>${row[col] ?? ''}</td>`).join('')}
                                 <td>
                                     <a href="/poc/form-editar-${tabla}?${pkParams}">Editar</a>
-                                    |
-                                    <form method="POST" action="/poc/${tabla}/eliminar" style="display:inline;" onsubmit="return confirm('¿Está seguro de eliminar (${pkResumen})?');">
-                                        ${def.pk.map(k => `<input type="hidden" name="${k}" value="${row[k] ?? ''}">`).join('')}
-                                        <button type="submit" style="background:none; border:none; color:red; text-decoration:underline; cursor:pointer; padding:0; font:inherit;">
-                                            Eliminar
-                                        </button>
-                                    </form>
                                 </td>
                             </tr>
                         `;
@@ -223,13 +238,17 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
         }
     });
 
-    // 2. CREAR (INSERT)
+    // 2. CREAR (INSERT) con validación
     app.post(`/poc/${tabla}/crear`, async (req, res) => {
         try {
             const valores = columnas.map(col => {
                 const campo = def.campos[col];
                 if (!campo) throw new Error(`Columna "${col}" no encontrada.`);
-                return castear(req.body[col], campo.tipo);
+                
+                const valorCasteado = castear(req.body[col], campo.tipo);
+                validarOpciones(col, valorCasteado, campo);
+
+                return valorCasteado;
             });
 
             const placeholders = columnas.map((_, i) => `$${i + 1}`).join(', ');
@@ -292,7 +311,7 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
                         body { font-family: sans-serif; margin: 2rem; }
                         form { display: flex; flex-direction: column; width: 320px; gap: 10px; }
                         label { display: flex; justify-content: space-between; align-items: center; }
-                        input[type="text"], input[type="number"] { width: 160px; padding: 2px; }
+                        input[type="text"], input[type="number"], select { width: 160px; padding: 2px; }
                     </style>
                 </head>
                 <body>
@@ -305,7 +324,7 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
                             return `
                                 <label>
                                     ${col}${esPk ? ' (PK)' : ''}:
-                                    ${renderInput(col, campo.tipo, registro[col], esPk)}
+                                    ${renderInput(col, campo, registro[col], esPk)}
                                 </label>
                             `;
                         }).join('')}
@@ -322,7 +341,7 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
         }
     });
 
-    // 4. ACTUALIZAR (UPDATE)
+    // 4. ACTUALIZAR (UPDATE) con validación
     app.post(`/poc/${tabla}/actualizar`, async (req, res) => {
         try {
             const colsModificables = columnas.filter(c => !def.pk.includes(c));
@@ -335,7 +354,11 @@ Object.entries(ssot.tablas).forEach(([tabla, def]: [string, DefTabla]) => {
             const valoresSet = colsModificables.map(c => {
                 const campo = def.campos[c];
                 if (!campo) throw new Error(`Columna "${c}" no encontrada.`);
-                return castear(req.body[c], campo.tipo);
+
+                const valorCasteado = castear(req.body[c], campo.tipo);
+                validarOpciones(c, valorCasteado, campo);
+
+                return valorCasteado;
             });
 
             const valoresPk = def.pk.map(c => {
